@@ -157,66 +157,88 @@ def extract_audio(job_id, url):
             done = d.get("downloaded_bytes") or 0
             frac = (done / total) if total else 0.0
             speed = d.get("speed")
-            speed_s = f" {speed/1024/1024:.1f} MB/s" if speed else ""
+            speed_s = " %.1f MB/s" % (speed / 1024 / 1024) if speed else ""
             job_set(job_id, status="downloading",
                     stage="downloading audio %d%%%s" % (int(min(frac, 1.0) * 100), speed_s),
                     progress=min(frac, 0.95))
         elif d.get("status") == "finished":
             job_set(job_id, stage="converting to mp3...", progress=0.95)
 
-    ydl_opts = {
-        "format": "bestaudio/best",
-        "outtmpl": template,
-        "noplaylist": True,
-        "quiet": True,
-        "no_warnings": True,
-        "progress_hooks": [progress_hook],
-        "writethumbnail": True,
-        "thumbnail_format": "jpg",
-        "postprocessors": [
-            {"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": MP3_QUALITY},
-            {"key": "FFmpegMetadata"},
-        ],
-        "postprocessor_args": [],
-    }
-    if os.path.exists(COOKIES_FILE):
-        # user-uploaded browser cookies — bypasses YouTube's datacenter bot check
-        ydl_opts["cookiefile"] = COOKIES_FILE
-    # logged-in web sessions sometimes return formats the web client can't use
-    # ("Requested format is not available") — fall back to android/tv clients
-    ydl_opts.setdefault("extractor_args", {})["youtube"] = {
-        "player_client": ["android", "tv", "web"]
-    }
+    def make_opts(cookiefile, player_client):
+        opts = {
+            "format": "bestaudio/best[acodec!=none]/best",
+            "outtmpl": template,
+            "noplaylist": True,
+            "quiet": True,
+            "no_warnings": True,
+            "progress_hooks": [progress_hook],
+            "writethumbnail": True,
+            "thumbnail_format": "jpg",
+            "postprocessors": [
+                {"key": "FFmpegExtractAudio", "preferredcodec": "mp3",
+                 "preferredquality": MP3_QUALITY},
+                {"key": "FFmpegMetadata"},
+            ],
+            "postprocessor_args": [],
+        }
+        if cookiefile:
+            opts["cookiefile"] = cookiefile
+        if player_client:
+            opts["extractor_args"] = {"youtube": {"player_client": player_client}}
+        return opts
 
-    info = {}
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True) or {}
-            if "entries" in info:  # playlist URL -> take first entry
-                info = (info["entries"] or [{}])[0]
-    except Exception as e:
+    # Ladder of extraction configs. Local IPs usually work with the default
+    # client (best quality, tried first); datacenter IPs (Render, VPS) get
+    # through with cookies and/or non-web clients. The first config that
+    # produces a file wins.
+    has_cookies = os.path.exists(COOKIES_FILE)
+    configs = [("default", None, None)]
+    if has_cookies:
+        configs.append(("cookies+web", COOKIES_FILE, ["web"]))
+        configs.append(("cookies+android", COOKIES_FILE, ["android"]))
+    configs.append(("android", None, ["android"]))
+    configs.append(("tv", None, ["tv"]))
+
+    info, produced, attempts = {}, None, []
+    for label, ck, pc in configs:
+        try:
+            with yt_dlp.YoutubeDL(make_opts(ck, pc)) as ydl:
+                info = ydl.extract_info(url, download=True) or {}
+                if "entries" in info:  # playlist URL -> take first entry
+                    info = (info["entries"] or [{}])[0]
+        except Exception as e:
+            attempts.append("%s: %s" % (label, str(e)[:180]))
+            cleanup_partial(track_id)
+            job_set(job_id, stage="%s failed, retrying…" % label)
+            continue
+        produced = None
+        for ext in (".mp3", ".m4a", ".opus", ".webm", ".flac"):
+            p = template + ext
+            if os.path.exists(p):
+                produced = p
+                break
+        if produced is None:
+            for fn in os.listdir(TRACKS_DIR):
+                if fn.startswith(track_id):
+                    produced = os.path.join(TRACKS_DIR, fn)
+                    break
+        if produced is not None:
+            break
+        attempts.append("%s: no audio file produced" % label)
         cleanup_partial(track_id)
-        msg = str(e)
-        job_set(job_id, status="error", stage="error", error=msg[:600])
+        job_set(job_id, stage="%s produced no file, retrying…" % label)
+
+    if produced is None:
+        msg = " | ".join(attempts[:3]) or "extraction failed"
+        if any("Sign in to confirm" in a or "not a bot" in a for a in attempts):
+            msg += (" | YouTube is blocking this server's IP. Open Settings on the page, "
+                    "upload a cookies.txt exported from your own browser session at "
+                    "youtube.com, and try again.")
+        job_set(job_id, status="error", stage="error", error=msg[:900])
         print("[coda] extract failed:", msg[:300], flush=True)
         return
 
-    produced = None
-    for ext in (".mp3", ".m4a", ".opus", ".webm", ".flac"):
-        p = template + ext
-        if os.path.exists(p):
-            produced = p
-            break
-    if produced is None:
-        for fn in os.listdir(TRACKS_DIR):
-            if fn.startswith(track_id):
-                produced = os.path.join(TRACKS_DIR, fn)
-                break
-    if produced is None:
-        job_set(job_id, status="error", stage="error",
-                error="extraction finished but no audio file was produced")
-        return
-
+    # final mp3 name
     final_path = os.path.join(TRACKS_DIR, track_id + ".mp3")
     if os.path.abspath(produced) != os.path.abspath(final_path):
         os.replace(produced, final_path)
