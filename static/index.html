@@ -42,6 +42,26 @@
     </div>
   </section>
 
+  <!-- SETTINGS CARD -->
+  <section class="card settings-card">
+    <details>
+      <summary>Settings — YouTube cookies (optional)</summary>
+      <div class="settings-body">
+        <p class="hint">If YouTube asks to <b>"sign in to confirm you're not a bot"</b> (common on
+        server IPs like Render), export a <b>cookies.txt</b> from your own browser and upload it here:
+        install the <b>"Get cookies.txt LOCALLY"</b> browser extension, open
+        <span class="mono">youtube.com</span> while signed in, click the extension icon, choose
+        <b>Export (Netscape)</b>. The file is stored only on this server — never in the repo.</p>
+        <div class="cookie-row">
+          <input id="cookieFile" type="file" accept=".txt,text/plain" class="cookie-file" />
+          <button id="cookieUploadBtn" class="btn-secondary">Upload</button>
+          <button id="cookieClearBtn" class="btn-ghost">Remove</button>
+        </div>
+        <p id="cookieStatus" class="hint">Cookie status: checking…</p>
+      </div>
+    </details>
+  </section>
+
   <!-- PLAYLIST CARD -->
   <section class="card playlist-card">
     <div class="playlist-head">

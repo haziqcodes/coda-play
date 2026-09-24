@@ -1,5 +1,7 @@
 """API tests for Coda — run with: pytest tests/ -q"""
 
+import io
+
 import pytest
 
 import server
@@ -15,6 +17,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "TRACKS_DIR", str(data / "tracks"))
     monkeypatch.setattr(server, "THUMB_DIR", str(data / "thumbs"))
     monkeypatch.setattr(server, "PLAYLIST_FILE", str(data / "playlist.json"))
+    monkeypatch.setattr(server, "COOKIES_FILE", str(data / "cookies.txt"))
     server.app.config["TESTING"] = True
     with server.app.test_client() as c:
         yield c
@@ -81,3 +84,36 @@ def test_add_rejects_invalid_url(client):
 
 def test_unknown_job_404(client):
     assert client.get("/api/job/nonexistent").status_code == 404
+
+
+NETSCAPE = ("# Netscape HTTP Cookie File\n"
+            ".youtube.com\tTRUE\t/\tTRUE\t0\tSID\tabc123\n"
+            ".youtube.com\tTRUE\t/\tTRUE\t0\tHSID\txyz789\n")
+
+
+def test_cookies_absent_by_default(client):
+    assert client.get("/api/cookies").get_json() == {"present": False, "cookies": 0}
+
+
+def test_cookies_upload_status_delete(client):
+    r = client.post("/api/cookies",
+                    data={"cookies": (io.BytesIO(NETSCAPE.encode()), "cookies.txt")},
+                    content_type="multipart/form-data")
+    assert r.status_code == 200
+    assert r.get_json()["cookies"] == 2
+    assert client.get("/api/cookies").get_json() == {"present": True, "cookies": 2}
+
+    # empty / comment-only upload is rejected
+    r = client.post("/api/cookies",
+                    data={"cookies": (io.BytesIO(b"# only a comment\n"), "cookies.txt")},
+                    content_type="multipart/form-data")
+    assert r.status_code == 400
+
+    # raw-text body also works
+    r = client.post("/api/cookies", data=NETSCAPE.encode(),
+                    content_type="text/plain")
+    assert r.status_code == 200
+
+    # delete
+    assert client.delete("/api/cookies").status_code == 200
+    assert client.get("/api/cookies").get_json() == {"present": False, "cookies": 0}

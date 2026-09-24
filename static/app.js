@@ -47,6 +47,10 @@ const els = {
   toast: $("toast"),
   healthDot: $("healthDot"),
   playerBar: $("playerBar"),
+  cookieFile: $("cookieFile"),
+  cookieUploadBtn: $("cookieUploadBtn"),
+  cookieClearBtn: $("cookieClearBtn"),
+  cookieStatus: $("cookieStatus"),
 };
 
 audio.volume = parseFloat(els.volSlider.value);
@@ -423,6 +427,46 @@ async function removeTrack(id, index) {
   renderPlaylist();
 }
 
+// ---- YouTube cookies -------------------------------------------------------
+async function refreshCookieStatus() {
+  try {
+    const res = await fetch("/api/cookies");
+    const c = await res.json();
+    els.cookieStatus.textContent = c.present
+      ? "Active — " + c.cookies + " cookies uploaded."
+      : "No cookies uploaded.";
+  } catch {
+    els.cookieStatus.textContent = "Status unavailable.";
+  }
+}
+
+els.cookieUploadBtn.addEventListener("click", async () => {
+  const f = els.cookieFile.files[0];
+  if (!f) { toast("Choose a cookies.txt file first.", true); return; }
+  const fd = new FormData();
+  fd.append("cookies", f);
+  try {
+    const res = await fetch("/api/cookies", { method: "POST", body: fd });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || "Upload failed");
+    toast("Cookies uploaded (" + d.cookies + ").");
+    els.cookieFile.value = "";
+    await refreshCookieStatus();
+  } catch (e) {
+    toast(e.message, true);
+  }
+});
+
+els.cookieClearBtn.addEventListener("click", async () => {
+  try {
+    await fetch("/api/cookies", { method: "DELETE" });
+    toast("Cookies removed.");
+  } catch {
+    toast("Could not remove cookies.", true);
+  }
+  await refreshCookieStatus();
+});
+
 // ---- health --------------------------------------------------------------------
 async function checkHealth() {
   try {
@@ -442,4 +486,5 @@ async function checkHealth() {
 // ---- init ------------------------------------------------------------------------
 refreshPlaylist();
 checkHealth();
+refreshCookieStatus();
 updateRepeatUi();

@@ -32,6 +32,7 @@ DATA_DIR = os.path.join(BASE_DIR, "data")
 TRACKS_DIR = os.path.join(DATA_DIR, "tracks")
 THUMB_DIR = os.path.join(DATA_DIR, "thumbs")
 PLAYLIST_FILE = os.path.join(DATA_DIR, "playlist.json")
+COOKIES_FILE = os.path.join(DATA_DIR, "cookies.txt")
 
 for _d in (DATA_DIR, TRACKS_DIR, THUMB_DIR):
     os.makedirs(_d, exist_ok=True)
@@ -178,6 +179,9 @@ def extract_audio(job_id, url):
         ],
         "postprocessor_args": [],
     }
+    if os.path.exists(COOKIES_FILE):
+        # user-uploaded browser cookies — bypasses YouTube's datacenter bot check
+        ydl_opts["cookiefile"] = COOKIES_FILE
 
     info = {}
     try:
@@ -393,6 +397,51 @@ def audio_file(track_id):
 def thumb_file(thumb_id):
     safe = re.sub(r"[^a-z0-9]", "", thumb_id)
     return send_from_directory(THUMB_DIR, safe + ".jpg")
+
+
+@app.get("/api/cookies")
+def cookies_status():
+    if not os.path.exists(COOKIES_FILE):
+        return jsonify({"present": False, "cookies": 0})
+    try:
+        with open(COOKIES_FILE, "r", encoding="utf-8") as fh:
+            lines = [line for line in fh.read().splitlines()
+                     if line.strip() and not line.strip().startswith("#")]
+        return jsonify({"present": True, "cookies": len(lines)})
+    except OSError:
+        return jsonify({"present": False, "cookies": 0})
+
+
+@app.post("/api/cookies")
+def cookies_upload():
+    """Accepts multipart file 'cookies' or raw text body (Netscape cookies.txt).
+    Stored only in data/ (git-ignored) — never in the repo."""
+    raw = None
+    f = request.files.get("cookies")
+    if f is not None:
+        raw = f.read()
+    elif request.data:
+        raw = request.data
+    if not raw:
+        return jsonify({"error": "No cookies.txt content received."}), 400
+    text = raw.decode("utf-8", errors="ignore")
+    lines = [line for line in text.splitlines()
+             if line.strip() and not line.strip().startswith("#")]
+    if not lines:
+        return jsonify({"error": "cookies.txt is empty (no cookie lines found). "
+                                 "Export from youtube.com while signed in."}), 400
+    with open(COOKIES_FILE, "w", encoding="utf-8") as fh:
+        fh.write(text.rstrip() + "\n")
+    return jsonify({"ok": True, "cookies": len(lines)})
+
+
+@app.delete("/api/cookies")
+def cookies_delete():
+    try:
+        os.remove(COOKIES_FILE)
+    except OSError:
+        pass
+    return jsonify({"ok": True})
 
 
 @app.get("/ai")

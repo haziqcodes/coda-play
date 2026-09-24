@@ -121,6 +121,72 @@ main { max-width: 860px; margin: 0 auto; padding: 24px 16px 40px; }
   transition: width .4s ease;
 }
 
+/* ---------- settings ---------- */
+.settings-card { padding: 0; }
+.settings-card summary {
+  cursor: pointer;
+  padding: 14px 20px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--muted);
+  list-style: none;
+  position: relative;
+  padding-left: 34px;
+}
+.settings-card summary::-webkit-details-marker { display: none; }
+.settings-card summary::before {
+  content: "";
+  position: absolute; left: 18px; top: 50%;
+  width: 8px; height: 8px;
+  border-right: 2px solid var(--faint);
+  border-bottom: 2px solid var(--faint);
+  transform: translateY(-70%) rotate(-45deg);
+  transition: transform .15s;
+}
+.settings-card[open] summary::before { transform: translateY(-30%) rotate(45deg); }
+.settings-body { padding: 0 20px 18px; }
+.settings-body .hint { line-height: 1.6; }
+.settings-body .mono { font-family: var(--mono); font-size: 12px; background: var(--line-soft); padding: 1px 5px; border-radius: 4px; }
+.cookie-row { display: flex; gap: 10px; margin-top: 12px; align-items: center; }
+.cookie-file {
+  flex: 1;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 9px 12px;
+  font-size: 12.5px;
+  font-family: var(--font);
+  color: var(--muted);
+  background: #fff;
+  min-width: 0;
+}
+.btn-secondary {
+  background: #fff;
+  border: 1px solid var(--accent);
+  color: var(--accent-dark);
+  font-size: 13px;
+  font-weight: 600;
+  font-family: var(--font);
+  padding: 9px 16px;
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background .15s;
+}
+.btn-secondary:hover { background: var(--accent-soft); }
+.btn-ghost {
+  background: none;
+  border: 1px solid transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 500;
+  font-family: var(--font);
+  padding: 9px 14px;
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.btn-ghost:hover { color: var(--err); background: rgba(217, 48, 37, 0.06); }
+
 /* ---------- playlist ---------- */
 .playlist-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
 .playlist-name {

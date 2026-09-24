@@ -159,10 +159,34 @@ Coda is a **personal-use** player. To stay on the right side of the law:
 
 | Option | Cost | Notes |
 |--------|------|-------|
-| Your PC / laptop | free | Recommended — private & instant |
+| **Render free (Blueprint)** | $0 | One-click from this repo — see below. Sleeps after 15 min idle (first request ~30-60 s); disk is **ephemeral** (playlist resets on redeploy) |
+| Your PC / laptop | free | Recommended for a permanent personal library — private & instant |
 | Android (Termux) | free | Phone becomes a pocket jukebox over Wi-Fi |
-| Free VPS (Oracle Cloud Free Tier) | $0 | Run via `gunicorn -w 1 --threads 8 -b 0.0.0.0:8000 server:app` + Caddy/Nginx + HTTPS |
+| Free VPS (Oracle Cloud Free Tier) | $0 | Persistent disk — best "24×7 free" option: `gunicorn -w 1 --threads 8 -b 0.0.0.0:8000 server:app` + Caddy/Nginx + HTTPS |
 | Raspberry Pi / old PC | free | 24×7 home jukebox on LAN |
+
+### Deploy to Render (free, step by step)
+1. Create a free account at [render.com](https://render.com) using your **GitHub** login.
+2. Render dashboard → **New** → **Blueprint** (it reads `render.yaml` from this repo).
+3. Select the `coda-play` repository → the service `coda-play` appears (Docker runtime, free plan, Singapore region, health check `/api/health`) → **Apply**.
+4. Wait ~3-5 min while the Docker build installs ffmpeg. The first request after any deploy is a cold start.
+5. Open your URL: `https://coda-play.onrender.com`
+
+Free-tier reality check: the **disk resets on every deploy** (extracted mp3s and the
+playlist are lost) and the service sleeps after inactivity. For a permanent personal
+library, run it on your own machine or a free VPS instead.
+
+### Troubleshooting: "Sign in to confirm you're not a bot" (YouTube)
+YouTube blocks datacenter/server IPs (Render, VPS) — this is YouTube's bot check,
+not a bug. Fix in ~2 minutes using **your own browser's session**:
+1. In your browser (signed into YouTube) install the extension **Get cookies.txt LOCALLY**
+   (Chrome) or **cookies.txt** (Firefox).
+2. Open `youtube.com`, click the extension icon → **Export (Netscape)** → saves `cookies.txt`.
+3. In Coda open **Settings** (card under the URL box) → choose the file → **Upload**.
+4. Retry the URL. Re-export every few weeks when the session expires.
+
+Cookies are stored only in `data/` on the server (git-ignored, never in the repo).
+Tip: use a dedicated YouTube account for this to limit what a leaked session exposes.
 
 ---
 
