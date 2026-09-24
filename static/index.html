@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Coda — ad-free audio playlist</title>
+<meta name="description" content="Paste any video URL, extract the audio, and play it as a personal ad-free playlist." />
+<link rel="stylesheet" href="/style.css" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231a73e8'/%3E%3Cpath d='M13 7v12.1A3.5 3.5 0 1 0 15 22V11h5V7h-7z' fill='white'/%3E%3C/svg%3E" />
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-logo" aria-hidden="true">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M12 3v10.55A3.5 3.5 0 1 0 14 17.5V7h4V3h-6z"/></svg>
+    </span>
+    <span class="brand-name">Coda</span>
+  </div>
+  <span class="tagline">Paste a video URL, play the audio — ad-free, on your machine.</span>
+  <span id="healthDot" class="health-dot" title="Server status"></span>
+</header>
+
+<main>
+  <!-- ADD CARD -->
+  <section class="card add-card">
+    <label for="urlInput" class="add-label">Add a song to your playlist</label>
+    <div class="add-row">
+      <input id="urlInput" type="url" placeholder="Paste any video URL — YouTube, Instagram, TikTok, X, Facebook…" autocomplete="off" spellcheck="false" />
+      <button id="addBtn" class="btn-primary">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6V5z"/></svg>
+        <span>Add</span>
+      </button>
+    </div>
+    <p class="hint">Long and short videos from 1000+ sites. Audio is stored locally — no ads, ever.</p>
+
+    <div id="progressWrap" class="progress-wrap hidden">
+      <div class="progress-info">
+        <span id="progressStage">Queued…</span>
+        <span id="progressErr" class="progress-err"></span>
+      </div>
+      <div class="progress-bar"><div id="progressFill"></div></div>
+    </div>
+  </section>
+
+  <!-- PLAYLIST CARD -->
+  <section class="card playlist-card">
+    <div class="playlist-head">
+      <input id="playlistName" class="playlist-name" value="My Coda Playlist" maxlength="120" />
+      <span id="playlistStats" class="playlist-stats">0 tracks · 0:00</span>
+    </div>
+    <ul id="trackList" class="tracklist"></ul>
+    <div id="emptyState" class="empty-state">
+      <div class="empty-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="44" height="44" fill="currentColor"><path d="M12 3v10.55A3.5 3.5 0 1 0 14 17.5V7h4V3h-6z"/></svg>
+      </div>
+      <p>Your playlist is empty.</p>
+      <p class="empty-sub">Paste a video link above and press <b>Add</b> — its audio becomes your first song.</p>
+    </div>
+  </section>
+
+  <footer class="legal">
+    <b>Personal use only.</b> Extract audio only from content you own, have permission to use,
+    or that is freely licensed (e.g. Creative Commons). Respect platform terms of service and
+    local copyright law. Do not redistribute extracted audio.
+  </footer>
+</main>
+
+<!-- PLAYER BAR -->
+<footer id="playerBar" class="player-bar">
+  <div class="pb-track">
+    <div id="pbThumb" class="pb-thumb" hidden>
+      <img id="pbThumbImg" alt="" src="" />
+      <span class="pb-thumb-fallback" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M12 3v10.55A3.5 3.5 0 1 0 14 17.5V7h4V3h-6z"/></svg>
+      </span>
+    </div>
+    <div class="pb-meta">
+      <div id="pbTitle" class="pb-title">Nothing playing</div>
+      <div id="pbArtist" class="pb-artist">—</div>
+    </div>
+  </div>
+
+  <div class="pb-center">
+    <div class="pb-buttons">
+      <button id="prevBtn" class="pb-icon-btn" title="Previous — only one song plays at a time">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg>
+      </button>
+      <button id="playBtn" class="pb-play" title="Play / Pause">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+      </button>
+      <button id="nextBtn" class="pb-icon-btn" title="Next">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
+      </button>
+    </div>
+    <div class="pb-progress">
+      <span id="curTime" class="pb-time">0:00</span>
+      <div id="seekBar" class="seekbar"><div id="seekFill" class="seekfill"></div></div>
+      <span id="durTime" class="pb-time">0:00</span>
+    </div>
+  </div>
+
+  <div class="pb-right">
+    <button id="repeatBtn" class="pb-icon-btn repeat-off" title="Repeat: off — the playlist stops when it ends">
+      <svg viewBox="0 0 24 24" width="17" height="17" fill="currentColor" aria-hidden="true"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>
+      <span id="repeatBadge" class="repeat-badge">1</span>
+    </button>
+    <input id="volSlider" type="range" min="0" max="1" step="0.01" value="0.9" title="Volume" />
+  </div>
+</footer>
+
+<div id="toast" class="toast hidden"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>

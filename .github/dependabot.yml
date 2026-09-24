@@ -1,0 +1,15 @@
+version: 2
+updates:
+  # keep pip dependencies fresh + secure (free for public repos)
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+
+  # keep GitHub Actions themselves patched
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5

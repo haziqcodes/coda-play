@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Coda community discussions
+    url: https://github.com/mohdhaziq-work/coda-play/discussions
+    about: Please ask usage questions in Discussions instead of opening an issue.

@@ -1,0 +1,16 @@
+# runtime data (your playlists + audio live here)
+data/
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# os junk
+.DS_Store
+Thumbs.db
+server.log
+
+# test caches
+.pytest_cache/

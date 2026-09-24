@@ -1,0 +1,11 @@
+services:
+  coda:
+    build: .
+    container_name: coda-play
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data     # your playlist + mp3s survive rebuilds
+    environment:
+      - PORT=8000
+    restart: unless-stopped
