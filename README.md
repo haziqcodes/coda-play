@@ -39,6 +39,7 @@ coda-play/
 ├── Makefile             # make install / run / test / lint / docker
 ├── Dockerfile           # one-command container build (ffmpeg included)
 ├── docker-compose.yml
+├── render.yaml          # Render Blueprint — one-click free deploy
 ├── LICENSE              # MIT
 ├── .editorconfig
 ├── .github/

@@ -1,0 +1,9 @@
+# Render Blueprint — deploys Coda from this repo in one click.
+# Render.com -> New -> Blueprint -> pick this repo -> Deploy.
+services:
+  - type: web
+    name: coda-play
+    runtime: docker          # builds ./Dockerfile (python:3.12-slim + ffmpeg)
+    plan: free
+    region: singapore        # nearest to India; change if preferred
+    healthCheckPath: /api/health
