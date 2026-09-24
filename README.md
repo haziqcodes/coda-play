@@ -5,7 +5,7 @@
 > 100% free · 100% local — no accounts, no API keys, no paid services, no ads.
 
 <!-- replace `mohdhaziq-work` below with your real GitHub username -->
-[![CI](https://github.com/mohdhaziq-work/coda-play/actions/workflows/ci.yml/badge.svg)](https://github.com/mohdhaziq-work/coda-play/actions)
+[![CI](https://github.com/haziqcodes/coda-play/actions/workflows/ci.yml/badge.svg)](https://github.com/haziqcodes/coda-play/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/)
 [![yt-dlp](https://img.shields.io/badge/yt--dlp-1000%2B%20sites-green.svg)](https://github.com/yt-dlp/yt-dlp)
@@ -78,7 +78,7 @@ coda-play/
 
 ### 2. Get the code
 ```bash
-git clone https://github.com/mohdhaziq-work/coda-play.git
+git clone https://github.com/haziqcodes/coda-play.git
 cd coda-play
 ```
 

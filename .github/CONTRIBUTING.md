@@ -5,7 +5,7 @@ keep it that way.
 
 ## Quick start
 ```bash
-git clone https://github.com/mohdhaziq-work/coda-play.git
+git clone https://github.com/haziqcodes/coda-play.git
 cd coda-play
 make install      # venv + deps
 make test         # run the test suite

@@ -46,6 +46,7 @@ const els = {
   repeatBadge: $("repeatBadge"),
   toast: $("toast"),
   healthDot: $("healthDot"),
+  playerBar: $("playerBar"),
 };
 
 audio.volume = parseFloat(els.volSlider.value);
@@ -107,7 +108,10 @@ function renderPlaylist() {
       <div class="t-drag" title="Drag to reorder">${ICONS.grip}</div>
       ${thumb}
       <div class="t-main">
-        <div class="t-title">${escapeHtml(t.title)}</div>
+        <div class="t-title-row">
+          <span class="eq" aria-hidden="true"><i></i><i></i><i></i></span>
+          <span class="t-title">${escapeHtml(t.title)}</span>
+        </div>
         ${artist}
       </div>
       <div class="t-dur">${dur}</div>
@@ -248,6 +252,8 @@ function updatePlayerUi() {
   els.pbThumbImg.style.display = hasThumb ? "" : "none";
   els.pbThumbFallback.style.display = hasThumb ? "none" : "";
   els.playBtn.innerHTML = !audio.paused ? ICONS.pause : ICONS.play;
+  document.body.classList.toggle("paused", audio.paused);
+  els.playerBar.classList.toggle("playing", !audio.paused && state.currentIndex >= 0);
 }
 
 // audio events — 'ended' is the ONLY thing that starts the next song
