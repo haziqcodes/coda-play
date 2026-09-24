@@ -192,12 +192,14 @@ def extract_audio(job_id, url):
     # through with cookies and/or non-web clients. The first config that
     # produces a file wins.
     has_cookies = os.path.exists(COOKIES_FILE)
+    # Each config may list several player clients; yt-dlp falls through the
+    # list when a client raises (e.g. the bot-check error).
     configs = [("default", None, None)]
     if has_cookies:
-        configs.append(("cookies+web", COOKIES_FILE, ["web"]))
-        configs.append(("cookies+android", COOKIES_FILE, ["android"]))
-    configs.append(("android", None, ["android"]))
-    configs.append(("tv", None, ["tv"]))
+        configs.append(("cookies+web", COOKIES_FILE, ["web", "android", "ios", "tv"]))
+        configs.append(("cookies+android", COOKIES_FILE, ["android", "tv", "ios"]))
+    configs.append(("android", None, ["android", "ios", "tv"]))
+    configs.append(("tv", None, ["tv", "ios"]))
 
     info, produced, attempts = {}, None, []
     for label, ck, pc in configs:
@@ -229,12 +231,20 @@ def extract_audio(job_id, url):
         job_set(job_id, stage="%s produced no file, retrying…" % label)
 
     if produced is None:
-        msg = " | ".join(attempts[:3]) or "extraction failed"
+        # dedupe identical errors, keep at most 4 distinct attempts
+        seen, brief = set(), []
+        for a in attempts:
+            key = a.split(":", 1)[-1].strip()[:60]
+            if key not in seen:
+                seen.add(key)
+                brief.append(a[:200])
+        msg = " | ".join(brief[:4]) or "extraction failed"
         if any("Sign in to confirm" in a or "not a bot" in a for a in attempts):
             msg += (" | YouTube is blocking this server's IP. Open Settings on the page, "
-                    "upload a cookies.txt exported from your own browser session at "
-                    "youtube.com, and try again.")
-        job_set(job_id, status="error", stage="error", error=msg[:900])
+                    "upload the FULL cookies.txt exported from your own browser session "
+                    "at youtube.com (keep all cookies, including __Secure-* and "
+                    "ST-* tokens), and try again.")
+        job_set(job_id, status="error", stage="error", error=msg[:1600])
         print("[coda] extract failed:", msg[:300], flush=True)
         return
 
