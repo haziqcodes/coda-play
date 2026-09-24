@@ -182,6 +182,11 @@ def extract_audio(job_id, url):
     if os.path.exists(COOKIES_FILE):
         # user-uploaded browser cookies — bypasses YouTube's datacenter bot check
         ydl_opts["cookiefile"] = COOKIES_FILE
+    # logged-in web sessions sometimes return formats the web client can't use
+    # ("Requested format is not available") — fall back to android/tv clients
+    ydl_opts.setdefault("extractor_args", {})["youtube"] = {
+        "player_client": ["android", "tv", "web"]
+    }
 
     info = {}
     try:
