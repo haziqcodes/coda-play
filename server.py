@@ -191,15 +191,25 @@ def extract_audio(job_id, url):
     # client (best quality, tried first); datacenter IPs (Render, VPS) get
     # through with cookies and/or non-web clients. The first config that
     # produces a file wins.
-    has_cookies = os.path.exists(COOKIES_FILE)
     # Each config may list several player clients; yt-dlp falls through the
-    # list when a client raises (e.g. the bot-check error).
-    configs = [("default", None, None)]
+    # list when a client raises (e.g. the bot-check error). With cookies the
+    # cookie configs come first: they work everywhere AND anonymous attempts
+    # from datacenter IPs get those IPs flagged by YouTube, which would then
+    # break even the cookie path.
+    has_cookies = os.path.exists(COOKIES_FILE)
     if has_cookies:
-        configs.append(("cookies+web", COOKIES_FILE, ["web", "android", "ios", "tv"]))
-        configs.append(("cookies+android", COOKIES_FILE, ["android", "tv", "ios"]))
-    configs.append(("android", None, ["android", "ios", "tv"]))
-    configs.append(("tv", None, ["tv", "ios"]))
+        configs = [
+            ("cookies+web", COOKIES_FILE, ["web"]),
+            ("cookies+android", COOKIES_FILE, ["android", "ios", "tv"]),
+            ("default", None, None),
+            ("android", None, ["android", "ios", "tv"]),
+        ]
+    else:
+        configs = [
+            ("default", None, None),
+            ("android", None, ["android", "ios", "tv"]),
+            ("tv", None, ["tv", "ios"]),
+        ]
 
     info, produced, attempts = {}, None, []
     for label, ck, pc in configs:

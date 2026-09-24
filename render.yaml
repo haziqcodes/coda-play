@@ -5,5 +5,5 @@ services:
     name: coda-play
     runtime: docker          # builds ./Dockerfile (python:3.12-slim + ffmpeg)
     plan: free
-    region: singapore        # nearest to India; change if preferred
+    region: frankfurt        # datacenter IP: change here (or dashboard) if YouTube flags this IP
     healthCheckPath: /api/health
