@@ -5,7 +5,7 @@ services:
     name: coda-play
     runtime: docker          # builds ./Dockerfile (python:3.12-slim + ffmpeg)
     plan: free
-    region: sydney           # fresh datacenter IP (YouTube flags render IPs; change here if this one gets flagged)
+    region: singapore        # MUST match the existing service: Render cannot change region after creation (mismatch = "Failed sync")
     healthCheckPath: /api/health
     envVars:
       # Optional. Residential proxy if YouTube hard-flags the Render IP.
