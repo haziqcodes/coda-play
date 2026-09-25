@@ -117,3 +117,18 @@ def test_cookies_upload_status_delete(client):
     # delete
     assert client.delete("/api/cookies").status_code == 200
     assert client.get("/api/cookies").get_json() == {"present": False, "cookies": 0}
+
+
+def test_libraries_are_isolated(client):
+    a = {"X-Coda-Library": "AAAA1111"}
+    b = {"X-Coda-Library": "BBBB2222"}
+    client.post("/api/playlist", json={"name": "Phone A"}, headers=a)
+    assert client.get("/api/playlist", headers=a).get_json()["name"] == "Phone A"
+    assert client.get("/api/playlist", headers=b).get_json()["name"] == "My Coda Playlist"
+
+
+def test_playlist_url_detection():
+    assert server.is_playlist_url("https://www.youtube.com/playlist?list=PL123abc")
+    assert server.is_playlist_url("https://youtube.com/watch?v=x&list=PLxyz")
+    assert not server.is_playlist_url("https://www.youtube.com/watch?v=IltsOcCj1Ak")
+    assert not server.is_playlist_url("https://www.youtube.com/watch?v=x&list=RDx")  # endless mix

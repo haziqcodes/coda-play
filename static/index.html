@@ -42,6 +42,24 @@
     </div>
   </section>
 
+  <!-- LIBRARY CARD -->
+  <section class="card settings-card">
+    <details>
+      <summary>Library — use the same playlist in another browser</summary>
+      <div class="settings-body">
+        <p class="hint">Every browser gets its own private library. To see the same playlist in another
+        browser (Chrome, Firefox, …) on this device, open Coda there and enter this code once.</p>
+        <p class="lib-code-row">Your library code: <span id="libCode" class="lib-code mono">------</span>
+          <button id="libCopyBtn" class="btn-ghost">Copy</button></p>
+        <div class="cookie-row">
+          <input id="libInput" class="cookie-file" maxlength="32" placeholder="Enter a library code" autocapitalize="characters" />
+          <button id="libUseBtn" class="btn-secondary">Use code</button>
+          <button id="libNewBtn" class="btn-ghost">New library</button>
+        </div>
+      </div>
+    </details>
+  </section>
+
   <!-- SETTINGS CARD -->
   <section class="card settings-card">
     <details>

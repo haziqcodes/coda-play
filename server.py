@@ -81,12 +81,35 @@ def now_iso():
     return datetime.datetime.now().isoformat(timespec="seconds")
 
 
-def load_playlist():
+LIB_RE = re.compile(r"^[A-Z0-9]{4,32}$")
+
+
+def current_library():
+    """Library code sent by the browser (X-Coda-Library). Each code has its
+    own playlist, so every device/browser keeps its own library unless the
+    user links them by entering the same code."""
+    try:
+        code = (request.headers.get("X-Coda-Library") or "").strip().upper()
+    except RuntimeError:  # outside a request
+        return None
+    return code if LIB_RE.match(code) else None
+
+
+def playlist_path(lib=None):
+    if not lib:
+        return PLAYLIST_FILE
+    d = os.path.join(DATA_DIR, "libraries")
+    os.makedirs(d, exist_ok=True)
+    return os.path.join(d, lib + ".json")
+
+
+def load_playlist(lib=None):
     default = {"name": "My Coda Playlist", "tracks": []}
-    if not os.path.exists(PLAYLIST_FILE):
+    path = playlist_path(lib)
+    if not os.path.exists(path):
         return default
     try:
-        with open(PLAYLIST_FILE, "r", encoding="utf-8") as fh:
+        with open(path, "r", encoding="utf-8") as fh:
             data = json.load(fh)
         if not isinstance(data, dict) or not isinstance(data.get("tracks"), list):
             return default
@@ -95,11 +118,12 @@ def load_playlist():
         return default
 
 
-def save_playlist(pl):
-    tmp = PLAYLIST_FILE + ".tmp"
+def save_playlist(pl, lib=None):
+    path = playlist_path(lib)
+    tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(pl, fh, ensure_ascii=False, indent=2)
-    os.replace(tmp, PLAYLIST_FILE)
+    os.replace(tmp, path)
 
 
 def job_set(job_id, **kw):
@@ -164,17 +188,14 @@ def ffprobe_duration(path):
 # ---------------------------------------------------------------------------
 # extraction job (runs in background thread)
 # ---------------------------------------------------------------------------
-def extract_audio(job_id, url):
-    try:
-        import yt_dlp
-    except Exception as e:
-        job_set(job_id, status="error", stage="error",
-                error="yt-dlp is not installed. Run: pip install -r requirements.txt (%s)" % e)
-        return
-    if shutil.which("ffmpeg") is None:
-        job_set(job_id, status="error", stage="error",
-                error="ffmpeg not found on PATH. Install ffmpeg (see README).")
-        return
+class ExtractError(Exception):
+    pass
+
+
+def download_one(job_id, url, lib=None, prefix=""):
+    """Download + convert ONE video, append it to the library, return the track.
+    Raises ExtractError with a user-facing message on failure."""
+    import yt_dlp
 
     track_id = uuid.uuid4().hex[:12]
     template = os.path.join(TRACKS_DIR, track_id)
@@ -187,10 +208,10 @@ def extract_audio(job_id, url):
             speed = d.get("speed")
             speed_s = " %.1f MB/s" % (speed / 1024 / 1024) if speed else ""
             job_set(job_id, status="downloading",
-                    stage="downloading audio %d%%%s" % (int(min(frac, 1.0) * 100), speed_s),
-                    progress=min(frac, 0.95))
+                    stage="%sdownloading audio %d%%%s" % (prefix, int(min(frac, 1.0) * 100), speed_s),
+                    track_progress=min(frac, 0.95))
         elif d.get("status") == "finished":
-            job_set(job_id, stage="converting to mp3...", progress=0.95)
+            job_set(job_id, stage="%sconverting to mp3..." % prefix, track_progress=0.95)
 
     def make_opts(cookiefile, player_client):
         opts = {
@@ -263,7 +284,7 @@ def extract_audio(job_id, url):
         except Exception as e:
             attempts.append("%s: %s" % (label, str(e)[:180]))
             cleanup_partial(track_id)
-            job_set(job_id, stage="%s failed, retrying…" % label)
+            job_set(job_id, stage="%s%s failed, retrying…" % (prefix, label))
             continue
         produced = None
         for ext in (".mp3", ".m4a", ".opus", ".webm", ".flac"):
@@ -280,7 +301,7 @@ def extract_audio(job_id, url):
             break
         attempts.append("%s: no audio file produced" % label)
         cleanup_partial(track_id)
-        job_set(job_id, stage="%s produced no file, retrying…" % label)
+        job_set(job_id, stage="%s%s produced no file, retrying…" % (prefix, label))
 
     if produced is None:
         # dedupe identical errors, keep at most 4 distinct attempts
@@ -296,9 +317,8 @@ def extract_audio(job_id, url):
                     "Fix: set YTDLP_PROXY to a residential proxy, and/or upload a fresh "
                     "cookies.txt in Settings (export it from a PRIVATE/incognito window, "
                     "then close that window so YouTube does not rotate the cookies).")
-        job_set(job_id, status="error", stage="error", error=msg[:1600])
         print("[coda] extract failed:", msg[:300], flush=True)
-        return
+        raise ExtractError(msg[:1600])
 
     # final mp3 name
     final_path = os.path.join(TRACKS_DIR, track_id + ".mp3")
@@ -321,7 +341,7 @@ def extract_audio(job_id, url):
     artist = (info.get("artist") or info.get("uploader") or info.get("channel") or "").strip()
 
     with PLAYLIST_LOCK:
-        pl = load_playlist()
+        pl = load_playlist(lib)
         track = {
             "id": track_id,
             "title": title,
@@ -333,10 +353,96 @@ def extract_audio(job_id, url):
             "added_at": now_iso(),
         }
         pl["tracks"].append(track)
-        save_playlist(pl)
+        save_playlist(pl, lib)
 
-    job_set(job_id, status="done", stage="done", progress=1.0, track=track)
     print("[coda] added: %s (%s, %ss)" % (title, artist, duration), flush=True)
+    return track
+
+
+MAX_PLAYLIST = int(os.environ.get("MAX_PLAYLIST", "100"))
+
+
+def is_playlist_url(url):
+    """YouTube playlist links (…/playlist?list=… or watch?v=…&list=…).
+    Auto-generated mixes (list=RD…) are endless, so they stay single-video."""
+    m = re.search(r"[?&]list=([A-Za-z0-9_-]+)", url)
+    return bool(m) and not m.group(1).startswith("RD")
+
+
+def list_playlist(url):
+    """Flat-list playlist entries without downloading anything (fast)."""
+    import yt_dlp
+    m = re.search(r"[?&]list=([A-Za-z0-9_-]+)", url)
+    purl = "https://www.youtube.com/playlist?list=" + m.group(1)
+    opts = {"extract_flat": "in_playlist", "quiet": True, "no_warnings": True,
+            "playlistend": MAX_PLAYLIST}
+    if os.path.exists(COOKIES_FILE):
+        opts["cookiefile"] = COOKIES_FILE
+    if YTDLP_PROXY:
+        opts["proxy"] = YTDLP_PROXY
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(purl, download=False) or {}
+    urls = []
+    for e in info.get("entries") or []:
+        if not e or e.get("title") in ("[Private video]", "[Deleted video]"):
+            continue
+        vid = e.get("id")
+        if vid:
+            urls.append("https://www.youtube.com/watch?v=" + vid)
+    return info.get("title") or "Playlist", urls
+
+
+def extract_audio(job_id, url, lib=None):
+    try:
+        import yt_dlp  # noqa: F401
+    except Exception as e:
+        job_set(job_id, status="error", stage="error",
+                error="yt-dlp is not installed. Run: pip install -r requirements.txt (%s)" % e)
+        return
+    if shutil.which("ffmpeg") is None:
+        job_set(job_id, status="error", stage="error",
+                error="ffmpeg not found on PATH. Install ffmpeg (see README).")
+        return
+
+    if not is_playlist_url(url):
+        try:
+            track = download_one(job_id, url, lib)
+        except ExtractError as e:
+            job_set(job_id, status="error", stage="error", error=str(e))
+            return
+        except Exception as e:
+            job_set(job_id, status="error", stage="error", error=str(e)[:600])
+            return
+        job_set(job_id, status="done", stage="done", progress=1.0, track=track, added=1, total=1)
+        return
+
+    # ---- playlist: list entries first, then download one by one --------------
+    job_set(job_id, status="downloading", stage="reading playlist…", kind="playlist")
+    try:
+        ptitle, urls = list_playlist(url)
+    except Exception as e:
+        job_set(job_id, status="error", stage="error", error="Could not read playlist: %s" % str(e)[:400])
+        return
+    if not urls:
+        job_set(job_id, status="error", stage="error", error="Playlist is empty or private.")
+        return
+    total, added, failed, last = len(urls), 0, [], None
+    job_set(job_id, total=total, added=0, failed=0, playlist_title=ptitle)
+    for i, vurl in enumerate(urls):
+        prefix = "Track %d/%d · " % (i + 1, total)
+        job_set(job_id, stage=prefix + "starting…", current=i + 1, track_progress=0.0)
+        try:
+            last = download_one(job_id, vurl, lib, prefix)
+            added += 1
+        except Exception as e:
+            failed.append("%s: %s" % (vurl, str(e)[:120]))
+        job_set(job_id, added=added, failed=len(failed), progress=(i + 1) / total)
+    if added == 0:
+        job_set(job_id, status="error", stage="error",
+                error="No track from the playlist could be added. " + " | ".join(failed[:2]))
+        return
+    job_set(job_id, status="done", stage="done", progress=1.0, track=last,
+            added=added, total=total, failures=failed[:10])
 
 
 # ---------------------------------------------------------------------------
@@ -385,15 +491,16 @@ def health():
 @app.get("/api/playlist")
 def get_playlist():
     with PLAYLIST_LOCK:
-        return jsonify(load_playlist())
+        return jsonify(load_playlist(current_library()))
 
 
 @app.post("/api/playlist")
 def update_playlist():
     """Body: {"name": "..."} to rename, and/or {"ids": [...]} to reorder."""
     data = request.get_json(silent=True) or {}
+    lib = current_library()
     with PLAYLIST_LOCK:
-        pl = load_playlist()
+        pl = load_playlist(lib)
         if isinstance(data.get("name"), str) and data["name"].strip():
             pl["name"] = data["name"].strip()[:120]
         if isinstance(data.get("ids"), list):
@@ -403,7 +510,7 @@ def update_playlist():
             known.sort(key=lambda t: order[t["id"]])
             dropped = [t for t in tracks if t["id"] not in order]
             pl["tracks"] = known + dropped
-        save_playlist(pl)
+        save_playlist(pl, lib)
         return jsonify(pl)
 
 
@@ -413,14 +520,14 @@ def remove_track():
     tid = re.sub(r"[^a-z0-9]", "", str(data.get("id", "")))
     if not tid:
         abort(400)
+    lib = current_library()
     with PLAYLIST_LOCK:
-        pl = load_playlist()
+        pl = load_playlist(lib)
         before = len(pl["tracks"])
         pl["tracks"] = [t for t in pl["tracks"] if t["id"] != tid]
         if len(pl["tracks"]) == before:
-            save_playlist(pl)
             abort(404)
-        save_playlist(pl)
+        save_playlist(pl, lib)
     # delete files
     try:
         os.remove(os.path.join(TRACKS_DIR, tid + ".mp3"))
@@ -441,7 +548,7 @@ def add_track():
         return jsonify({"error": "Please paste a valid http(s) URL."}), 400
     job_id = uuid.uuid4().hex
     job_set(job_id, status="pending", stage="queued", progress=0.0)
-    t = threading.Thread(target=extract_audio, args=(job_id, url), daemon=True)
+    t = threading.Thread(target=extract_audio, args=(job_id, url, current_library()), daemon=True)
     t.start()
     return jsonify({"job_id": job_id})
 

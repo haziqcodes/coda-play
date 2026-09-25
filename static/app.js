@@ -13,6 +13,25 @@ const state = {
   dragIndex: null,
 };
 
+// ---- library code: each browser has its own library unless linked ---------
+const LIB_KEY = "coda.library";
+function newLibraryCode() {
+  const abc = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no 0/O/1/I confusion
+  const buf = new Uint32Array(8);
+  crypto.getRandomValues(buf);
+  return [...buf].map((n) => abc[n % abc.length]).join("");
+}
+let libraryCode = localStorage.getItem(LIB_KEY);
+if (!/^[A-Z0-9]{4,32}$/.test(libraryCode || "")) {
+  libraryCode = newLibraryCode();
+  localStorage.setItem(LIB_KEY, libraryCode);
+}
+// every API call carries the library code
+function api(path, opts = {}) {
+  const headers = Object.assign({}, opts.headers || {}, { "X-Coda-Library": libraryCode });
+  return fetch(path, Object.assign({}, opts, { headers }));
+}
+
 const audio = new Audio(); // single player — guarantees one song at a time
 audio.preload = "auto";
 
@@ -165,7 +184,7 @@ function persistOrder() {
   state.playlist.tracks = ids
     .map((id) => state.playlist.tracks.find((t) => t.id === id))
     .filter(Boolean);
-  fetch("/api/playlist", {
+  api("/api/playlist", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ids }),
@@ -322,7 +341,7 @@ async function addTrack() {
 
   setBusy(true, "contacting server…");
   try {
-    const res = await fetch("/api/add", {
+    const res = await api("/api/add", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ url }),
@@ -339,20 +358,29 @@ async function addTrack() {
 
 function pollJob(jobId) {
   clearTimeout(pollTimer);
+  let lastAdded = 0;
   const tick = async () => {
     try {
-      const res = await fetch("/api/job/" + jobId);
+      const res = await api("/api/job/" + jobId);
       const job = await res.json();
+      const isList = job.kind === "playlist";
+      if (isList && job.added !== lastAdded) { lastAdded = job.added; refreshPlaylist(); }
       if (job.status === "done") {
         setBusy(false);
-        toast(`Added: ${job.track.title}`);
+        if (isList) {
+          toast(`Playlist added: ${job.added} of ${job.total} tracks` + (job.total > job.added ? " (some were unavailable)" : ""));
+        } else {
+          toast(`Added: ${job.track.title}`);
+        }
         await refreshPlaylist();
       } else if (job.status === "error") {
         setBusy(false);
         toast(job.error || "Extraction failed.", true);
       } else {
         setBusy(true, job.stage || job.status);
-        if (typeof job.progress === "number") els.progressFill.style.width = job.progress * 100 + "%";
+        let p = job.track_progress || 0;
+        if (isList && job.total) p = ((job.current || 1) - 1 + p) / job.total;
+        els.progressFill.style.width = Math.min(p, 1) * 100 + "%";
         pollTimer = setTimeout(tick, 1200);
       }
     } catch {
@@ -376,7 +404,7 @@ function setBusy(on, stage) {
 // ---- playlist data -------------------------------------------------------------
 async function refreshPlaylist() {
   try {
-    const res = await fetch("/api/playlist");
+    const res = await api("/api/playlist");
     state.playlist = await res.json();
     renderPlaylist();
   } catch (e) {
@@ -391,7 +419,7 @@ els.playlistName.addEventListener("change", async () => {
   clearTimeout(nameTimer);
   nameTimer = setTimeout(async () => {
     try {
-      const res = await fetch("/api/playlist", {
+      const res = await api("/api/playlist", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: els.playlistName.value }),
@@ -404,7 +432,7 @@ els.playlistName.addEventListener("change", async () => {
 
 async function removeTrack(id, index) {
   try {
-    const res = await fetch("/api/playlist/tracks/remove", {
+    const res = await api("/api/playlist/tracks/remove", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id }),
@@ -482,6 +510,35 @@ async function checkHealth() {
     els.healthDot.title = "Cannot reach server";
   }
 }
+
+// ---- library code UI -----------------------------------------------------------
+const libEl = { code: $("libCode"), input: $("libInput"), use: $("libUseBtn"), fresh: $("libNewBtn"), copy: $("libCopyBtn") };
+function switchLibrary(code) {
+  libraryCode = code;
+  localStorage.setItem(LIB_KEY, code);
+  libEl.code.textContent = code;
+  audio.pause();
+  state.currentIndex = -1;
+  updatePlayerUi();
+  refreshPlaylist();
+}
+libEl.code.textContent = libraryCode;
+libEl.use.addEventListener("click", () => {
+  const code = libEl.input.value.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+  if (!/^[A-Z0-9]{4,32}$/.test(code)) { toast("Enter a valid library code (4-32 letters/numbers).", true); return; }
+  libEl.input.value = "";
+  switchLibrary(code);
+  toast("Library switched.");
+});
+libEl.fresh.addEventListener("click", () => {
+  if (!confirm("Start a new empty library? Keep your current code if you want to come back to it: " + libraryCode)) return;
+  switchLibrary(newLibraryCode());
+  toast("New library created.");
+});
+libEl.copy.addEventListener("click", async () => {
+  try { await navigator.clipboard.writeText(libraryCode); toast("Code copied."); }
+  catch { toast("Copy failed — note the code manually.", true); }
+});
 
 // ---- init ------------------------------------------------------------------------
 refreshPlaylist();
