@@ -65,13 +65,36 @@ def _bootstrap_env_cookies():
 
 _bootstrap_env_cookies()
 
+
+def _start_pot_server():
+    """Run the bgutil PO-token HTTP server (port 4416) in the background.
+    yt-dlp's bgutil plugin tries HTTP first: one warm process with a token
+    cache is far faster than spawning Deno per token (script mode), which
+    costs ~20-30 s per attempt on Render's small free CPU."""
+    deno = shutil.which("deno")
+    main_ts = os.path.join(BGUTIL_SERVER_HOME, "src", "main.ts")
+    if not deno or not os.path.exists(main_ts) or os.environ.get("CODA_NO_POT_SERVER"):
+        return
+    try:
+        subprocess.Popen([deno, "run", "-A", main_ts], cwd=BGUTIL_SERVER_HOME,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True)
+        print("[coda] PO-token server starting on :4416", flush=True)
+    except Exception as e:
+        print("[coda] PO-token server failed to start:", e, flush=True)
+
+
 app = Flask(__name__, static_folder=os.path.join(BASE_DIR, "static"), static_url_path="")
 
 JOBS = {}
 JOBS_LOCK = threading.Lock()
 PLAYLIST_LOCK = threading.Lock()
 
-MP3_QUALITY = "192"  # kbps. Use "320" for max quality.
+MP3_QUALITY = "192"  # kbps (only used when re-encoding). Use "320" for max quality.
+AUDIO_CODEC = os.environ.get("AUDIO_CODEC", "m4a")  # "mp3" = old behaviour (slower)
+AUDIO_EXTS = (".m4a", ".mp3", ".opus", ".webm", ".flac")
+MIME = {".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".opus": "audio/ogg",
+        ".webm": "audio/webm", ".flac": "audio/flac"}
 
 
 # ---------------------------------------------------------------------------
@@ -211,11 +234,11 @@ def download_one(job_id, url, lib=None, prefix=""):
                     stage="%sdownloading audio %d%%%s" % (prefix, int(min(frac, 1.0) * 100), speed_s),
                     track_progress=min(frac, 0.95))
         elif d.get("status") == "finished":
-            job_set(job_id, stage="%sconverting to mp3..." % prefix, track_progress=0.95)
+            job_set(job_id, stage="%sfinishing audio..." % prefix, track_progress=0.95)
 
     def make_opts(cookiefile, player_client):
         opts = {
-            "format": "bestaudio/best[acodec!=none]/best",
+            "format": "bestaudio[ext=m4a]/bestaudio/best[acodec!=none]/best",
             "outtmpl": template,
             "noplaylist": True,
             "quiet": True,
@@ -224,7 +247,9 @@ def download_one(job_id, url, lib=None, prefix=""):
             "writethumbnail": True,
             "thumbnail_format": "jpg",
             "postprocessors": [
-                {"key": "FFmpegExtractAudio", "preferredcodec": "mp3",
+                # m4a source -> stream copy (no re-encode, seconds instead of
+                # minutes on a small CPU); other sources -> AAC.
+                {"key": "FFmpegExtractAudio", "preferredcodec": AUDIO_CODEC,
                  "preferredquality": MP3_QUALITY},
                 {"key": "FFmpegMetadata"},
             ],
@@ -287,7 +312,7 @@ def download_one(job_id, url, lib=None, prefix=""):
             job_set(job_id, stage="%s%s failed, retrying…" % (prefix, label))
             continue
         produced = None
-        for ext in (".mp3", ".m4a", ".opus", ".webm", ".flac"):
+        for ext in AUDIO_EXTS:
             p = template + ext
             if os.path.exists(p):
                 produced = p
@@ -321,13 +346,17 @@ def download_one(job_id, url, lib=None, prefix=""):
         raise ExtractError(msg[:1600])
 
     # final mp3 name
-    final_path = os.path.join(TRACKS_DIR, track_id + ".mp3")
+    ext = os.path.splitext(produced)[1].lower()
+    if ext not in AUDIO_EXTS:
+        ext = ".m4a"
+    final_name = track_id + ext
+    final_path = os.path.join(TRACKS_DIR, final_name)
     if os.path.abspath(produced) != os.path.abspath(final_path):
         os.replace(produced, final_path)
 
     thumb_url = None
     for fn in os.listdir(TRACKS_DIR):
-        if fn.startswith(track_id) and fn != track_id + ".mp3":
+        if fn.startswith(track_id) and fn != final_name:
             final_thumb = os.path.join(THUMB_DIR, track_id + ".jpg")
             os.replace(os.path.join(TRACKS_DIR, fn), final_thumb)
             thumb_url = "/thumbs/%s.jpg" % track_id
@@ -348,7 +377,7 @@ def download_one(job_id, url, lib=None, prefix=""):
             "artist": artist,
             "duration": duration,
             "source_url": info.get("webpage_url") or url,
-            "file": track_id + ".mp3",
+            "file": final_name,
             "thumbnail": thumb_url,
             "added_at": now_iso(),
         }
@@ -532,10 +561,11 @@ def remove_track():
             abort(404)
         save_playlist(pl, lib)
     # delete files
-    try:
-        os.remove(os.path.join(TRACKS_DIR, tid + ".mp3"))
-    except OSError:
-        pass
+    for ext in AUDIO_EXTS:
+        try:
+            os.remove(os.path.join(TRACKS_DIR, tid + ext))
+        except OSError:
+            pass
     try:
         os.remove(os.path.join(THUMB_DIR, tid + ".jpg"))
     except OSError:
@@ -573,16 +603,20 @@ def job_status(job_id):
     return jsonify(job)
 
 
-@app.get("/audio/<path:track_id>.mp3")
-def audio_file(track_id):
+@app.get("/audio/<track_id>.<ext>")
+def audio_file(track_id, ext):
     safe = re.sub(r"[^a-z0-9]", "", track_id)
-    path = os.path.join(TRACKS_DIR, safe + ".mp3")
+    ext = "." + re.sub(r"[^a-z0-9]", "", ext.lower())
+    if ext not in AUDIO_EXTS:
+        abort(404)
+    path = os.path.join(TRACKS_DIR, safe + ext)
     if not os.path.isfile(path):
         abort(404)
+    mime = MIME.get(ext, "application/octet-stream")
     file_size = os.path.getsize(path)
     range_header = request.headers.get("Range")
     if not range_header:
-        return send_file(path, mimetype="audio/mpeg", conditional=True)
+        return send_file(path, mimetype=mime, conditional=True)
     m = re.match(r"bytes=(\d*)-(\d*)", range_header)
     start, end = 0, file_size - 1
     if m:
@@ -598,7 +632,7 @@ def audio_file(track_id):
     with open(path, "rb") as fh:
         fh.seek(start)
         data = fh.read(length)
-    resp = Response(data, status=206, mimetype="audio/mpeg")
+    resp = Response(data, status=206, mimetype=mime)
     resp.headers["Content-Range"] = "bytes %d-%d/%d" % (start, end, file_size)
     resp.headers["Accept-Ranges"] = "bytes"
     resp.headers["Content-Length"] = str(length)
@@ -721,6 +755,7 @@ def ai_handoff():
 
 
 if __name__ == "__main__":
+    _start_pot_server()
     port = int(os.environ.get("PORT", "8000"))
     print("[coda] starting on http://0.0.0.0:%d" % port, flush=True)
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)

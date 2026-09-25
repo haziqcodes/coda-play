@@ -203,7 +203,7 @@ function playIndex(i) {
   if (!tracks.length || i < 0 || i >= tracks.length) return;
   state.currentIndex = i;
   const t = tracks[i];
-  audio.src = `/audio/${t.id}.mp3`;
+  audio.src = `/audio/${t.file || t.id + ".mp3"}`;
   audio.play().catch((e) => toast("Play failed: " + e.message, true));
   updatePlayerUi();
   renderPlaylist();
