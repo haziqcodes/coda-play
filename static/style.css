@@ -380,3 +380,9 @@ input[type="range"] { width: 88px; accent-color: var(--accent); cursor: pointer;
 /* ---------- library code ---------- */
 .lib-code-row { display: flex; align-items: center; gap: 10px; margin-top: 12px; font-size: 13px; color: var(--muted); }
 .lib-code { font-size: 15px !important; letter-spacing: 2px; color: var(--accent, #1a73e8); font-weight: 600; padding: 3px 8px !important; }
+
+/* song is saved on this device (plays even if the server restarts) */
+.track.on-device .t-title::after {
+  content: "on device"; margin-left: 8px; font-size: 10.5px; font-weight: 500;
+  color: #188038; background: #e6f4ea; padding: 1px 6px; border-radius: 10px; vertical-align: 1px;
+}

@@ -32,6 +32,74 @@ function api(path, opts = {}) {
   return fetch(path, Object.assign({}, opts, { headers }));
 }
 
+// ---- on-device storage ---------------------------------------------------------
+// Render free wipes the server disk on every restart, so each browser keeps
+// (1) a copy of its library in localStorage and (2) the audio + cover files in
+// IndexedDB. Songs play from the device first; the server is only a helper.
+const idb = (() => {
+  let dbp = null;
+  const open = () => dbp || (dbp = new Promise((res, rej) => {
+    const r = indexedDB.open("coda", 1);
+    r.onupgradeneeded = () => r.result.createObjectStore("files");
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  }));
+  const run = async (mode, fn) => {
+    const db = await open();
+    return new Promise((res, rej) => {
+      const tx = db.transaction("files", mode);
+      const req = fn(tx.objectStore("files"));
+      tx.oncomplete = () => res(req && req.result);
+      tx.onerror = () => rej(tx.error);
+    });
+  };
+  return {
+    get: (k) => run("readonly", (s) => s.get(k)).catch(() => undefined),
+    put: (k, v) => run("readwrite", (s) => s.put(v, k)).catch(() => undefined),
+    del: (k) => run("readwrite", (s) => s.delete(k)).catch(() => undefined),
+  };
+})();
+if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+
+const localKey = () => "coda.pl." + libraryCode;
+function saveLocal() {
+  try { localStorage.setItem(localKey(), JSON.stringify({ name: state.playlist.name, tracks: state.playlist.tracks })); } catch {}
+}
+function loadLocal() {
+  try { return JSON.parse(localStorage.getItem(localKey()) || "null"); } catch { return null; }
+}
+
+const caching = new Set();
+async function cacheTrack(t) {
+  if (!t || !t.id || caching.has(t.id)) return;
+  caching.add(t.id);
+  try {
+    if (!(await idb.get("a:" + t.id))) {
+      const r = await fetch(`/audio/${t.file || t.id + ".mp3"}`);
+      if (r.ok) await idb.put("a:" + t.id, await r.blob());
+    }
+    if (t.thumbnail && !(await idb.get("t:" + t.id))) {
+      const r = await fetch(t.thumbnail);
+      if (r.ok) await idb.put("t:" + t.id, await r.blob());
+    }
+  } catch {} finally { caching.delete(t.id); }
+  markCached();
+}
+async function markCached() {
+  for (const li of els.trackList.querySelectorAll(".track")) {
+    const has = !!(await idb.get("a:" + li.dataset.id));
+    li.classList.toggle("on-device", has);
+  }
+}
+// cover image fell back (server lost it) -> use the device copy
+async function thumbFallback(img, id) {
+  img.onerror = null;
+  const b = await idb.get("t:" + id);
+  if (b) img.src = URL.createObjectURL(b);
+  else img.replaceWith(Object.assign(document.createElement("div"), { className: "t-thumb t-thumb-fallback", innerHTML: ICONS.note }));
+}
+window.thumbFallback = thumbFallback;
+
 const audio = new Audio(); // single player — guarantees one song at a time
 audio.preload = "auto";
 
@@ -105,6 +173,8 @@ const ICONS = {
 
 // ---- playlist rendering ---------------------------------------------------
 function renderPlaylist() {
+  saveLocal();
+  setTimeout(markCached, 0);
   const tracks = state.playlist.tracks;
   els.playlistName.value = state.playlist.name;
   const total = tracks.reduce((a, t) => a + (Number(t.duration) || 0), 0);
@@ -121,7 +191,7 @@ function renderPlaylist() {
     if (i === state.currentIndex) li.classList.add("now-playing");
 
     const thumb = t.thumbnail
-      ? `<img class="t-thumb" src="${t.thumbnail}" alt="" loading="lazy" />`
+      ? `<img class="t-thumb" src="${t.thumbnail}" alt="" loading="lazy" onerror="thumbFallback(this, '${t.id}')" />`
       : `<div class="t-thumb t-thumb-fallback">${ICONS.note}</div>`;
 
     const dur = fmtTime(t.duration);
@@ -198,15 +268,47 @@ function escapeHtml(s) {
 }
 
 // ---- player ----------------------------------------------------------------
-function playIndex(i) {
+let blobUrl = null;
+let playToken = 0;
+async function playIndex(i) {
   const tracks = state.playlist.tracks;
   if (!tracks.length || i < 0 || i >= tracks.length) return;
   state.currentIndex = i;
   const t = tracks[i];
-  audio.src = `/audio/${t.file || t.id + ".mp3"}`;
-  audio.play().catch((e) => toast("Play failed: " + e.message, true));
+  const token = ++playToken;
   updatePlayerUi();
   renderPlaylist();
+  const blob = await idb.get("a:" + t.id);
+  if (token !== playToken) return; // user tapped another song meanwhile
+  if (blobUrl) { URL.revokeObjectURL(blobUrl); blobUrl = null; }
+  if (blob) {
+    blobUrl = URL.createObjectURL(blob);
+    audio.src = blobUrl;
+  } else {
+    audio.src = `/audio/${t.file || t.id + ".mp3"}`;
+    cacheTrack(t);
+  }
+  audio.play().catch((e) => { if (e.name !== "AbortError" && e.name !== "NotSupportedError") toast("Play failed: " + e.message, true); });
+}
+
+// The server lost the file (restart wiped its disk) and this device has no copy:
+// download it again under the same id, then play.
+const refetching = new Set();
+async function refetchAndPlay(i) {
+  const t = state.playlist.tracks[i];
+  if (!t || !t.source_url || refetching.has(t.id)) return;
+  refetching.add(t.id);
+  toast("Server lost this song — fetching it again (about 30 s)…");
+  try {
+    const job = await runJob({ url: t.source_url, track_id: t.id, single: true }, (st) => setBusy(true, st));
+    setBusy(false);
+    if (job.track) Object.assign(t, job.track);
+    await cacheTrack(t);
+    if (state.currentIndex === i) playIndex(i);
+  } catch (e) {
+    setBusy(false);
+    toast("Could not fetch this song again: " + e.message, true);
+  } finally { refetching.delete(t.id); }
 }
 
 function togglePlay() {
@@ -271,9 +373,18 @@ function updatePlayerUi() {
   els.pbArtist.textContent = t ? (t.artist || "—") : "—";
   const hasThumb = !!(t && t.thumbnail);
   els.pbThumb.hidden = !t;
-  els.pbThumbImg.src = hasThumb ? t.thumbnail : "";
+  if (hasThumb) {
+    // device copy first (server may have lost the cover after a restart)
+    const id = t.id;
+    idb.get("t:" + id).then((blob) => {
+      if (state.playlist.tracks[state.currentIndex] !== t) return;
+      els.pbThumbImg.src = blob ? URL.createObjectURL(blob) : t.thumbnail;
+    });
+  } else {
+    els.pbThumbImg.removeAttribute("src");
+  }
   els.pbThumbImg.style.display = hasThumb ? "" : "none";
-  els.pbThumbFallback.style.display = hasThumb ? "none" : "";
+  if (els.pbThumbFallback) els.pbThumbFallback.style.display = hasThumb ? "none" : "";
   els.playBtn.innerHTML = !audio.paused ? ICONS.pause : ICONS.play;
   document.body.classList.toggle("paused", audio.paused);
   els.playerBar.classList.toggle("playing", !audio.paused && state.currentIndex >= 0);
@@ -298,9 +409,10 @@ audio.addEventListener("loadedmetadata", () => {
 });
 audio.addEventListener("error", () => {
   if (!audio.src || state.currentIndex === -1) return;
-  toast("Could not play this track (file missing?).", true);
   state.isPlaying = false;
   updatePlayerUi();
+  if (!audio.src.startsWith("blob:")) refetchAndPlay(state.currentIndex);
+  else toast("Could not play this track.", true);
 });
 
 // seek
@@ -336,69 +448,118 @@ window.addEventListener("keydown", (e) => {
 let pollTimer = null;
 let currentJob = null;
 const stopBtn = $("stopBtn");
-stopBtn.addEventListener("click", async () => {
-  if (!currentJob) return;
+
+let stopRequested = false;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// POST /api/add then poll until done. Survives server cold starts; rejects
+// with "restart" if the server rebooted mid-job (job id unknown).
+async function runJob(body, onStage) {
+  let res, data;
+  for (let a = 0; ; a++) {
+    try {
+      res = await api("/api/add", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      data = await res.json();
+      break;
+    } catch (e) {
+      if (a >= 5) throw new Error("server unreachable");
+      onStage && onStage("server waking up…");
+      await sleep(5000);
+    }
+  }
+  if (!res.ok) throw new Error(data.error || "server rejected the URL");
+  const jobId = data.job_id;
+  currentJob = jobId;
+  let misses = 0;
+  for (;;) {
+    await sleep(1200);
+    let job;
+    try {
+      const r = await api("/api/job/" + jobId);
+      if (r.status === 404) throw Object.assign(new Error("restart"), { restart: true });
+      job = await r.json();
+      misses = 0;
+    } catch (e) {
+      if (e.restart) throw e;
+      if (++misses > 40) throw new Error("server unreachable");
+      onStage && onStage("server busy, reconnecting…");
+      await sleep(2000);
+      continue;
+    }
+    if (job.status === "done") return job;
+    if (job.status === "error") throw new Error(job.error || "Extraction failed.");
+    onStage && onStage(job.stage || job.status, job.track_progress || 0);
+  }
+}
+
+stopBtn.addEventListener("click", () => {
+  stopRequested = true;
   stopBtn.disabled = true;
-  try { await api("/api/job/" + currentJob + "/cancel", { method: "POST" }); } catch {}
+  els.progressStage.textContent = "stopping after this song…";
 });
+
 async function addTrack() {
   const url = els.urlInput.value.trim();
   if (!url) { toast("Paste a video URL first.", true); return; }
   if (!/^https?:\/\//i.test(url)) { toast("URL must start with http:// or https://", true); return; }
 
   setBusy(true, "contacting server…");
-  try {
-    const res = await api("/api/add", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "server rejected the URL");
-    els.urlInput.value = "";
-    pollJob(data.job_id);
-  } catch (e) {
-    setBusy(false);
-    toast(e.message, true);
-  }
-}
-
-function pollJob(jobId) {
-  clearTimeout(pollTimer);
-  let lastAdded = 0;
-  currentJob = jobId;
-  const tick = async () => {
+  let list = null;
+  if (/[?&]list=/.test(url)) {
     try {
-      const res = await api("/api/job/" + jobId);
-      const job = await res.json();
-      const isList = job.kind === "playlist";
-      stopBtn.classList.toggle("hidden", !(isList && job.status !== "done" && job.status !== "error"));
-      if (isList && job.added !== lastAdded) { lastAdded = job.added; refreshPlaylist(); }
-      if (job.status === "done") {
-        setBusy(false);
-        if (isList) {
-          toast(job.cancel
-            ? `Stopped — ${job.added} of ${job.total} tracks added`
-            : `Playlist added: ${job.added} of ${job.total} tracks` + (job.total > job.added ? " (some were unavailable)" : ""));
-        } else {
-          toast(`Added: ${job.track.title}`);
-        }
-        await refreshPlaylist();
-      } else if (job.status === "error") {
-        setBusy(false);
-        toast(job.error || "Extraction failed.", true);
-      } else {
-        setBusy(true, job.stage || job.status);
-        let p = job.track_progress || 0;
-        if (isList && job.total) p = ((job.current || 1) - 1 + p) / job.total;
-        els.progressFill.style.width = Math.min(p, 1) * 100 + "%";
-        pollTimer = setTimeout(tick, 1200);
-      }
-    } catch {
-      pollTimer = setTimeout(tick, 2500);
+      const r = await api("/api/list?url=" + encodeURIComponent(url));
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || "could not read playlist");
+      if (d.playlist) list = d;
+    } catch (e) { setBusy(false); toast(e.message, true); return; }
+  }
+  els.urlInput.value = "";
+
+  if (!list) {
+    try {
+      const job = await runJob({ url }, (st, p) => { setBusy(true, st); els.progressFill.style.width = (p || 0) * 100 + "%"; });
+      setBusy(false);
+      toast(`Added: ${job.track.title}`);
+      await refreshPlaylist();
+      cacheTrack(job.track);
+    } catch (e) {
+      setBusy(false);
+      toast(e.restart ? "Server restarted during download — please add it again." : e.message, true);
     }
-  };
-  tick();
+    return;
+  }
+
+  // playlist: the browser drives the import one song at a time
+  const items = list.items, total = items.length;
+  let added = 0, failed = 0;
+  stopRequested = false;
+  stopBtn.classList.remove("hidden");
+  for (let i = 0; i < total && !stopRequested; i++) {
+    const pre = `Song ${i + 1}/${total} · `;
+    let ok = false;
+    for (let attempt = 0; attempt < 3 && !ok; attempt++) {
+      try {
+        const job = await runJob({ url: items[i].url, single: true }, (st, p) => {
+          setBusy(true, pre + String(st).replace(/^Track \d+\/\d+ · /, ""));
+          els.progressFill.style.width = ((i + (p || 0)) / total) * 100 + "%";
+          stopBtn.classList.remove("hidden");
+        });
+        ok = true;
+        added++;
+        await refreshPlaylist();
+        await cacheTrack(job.track);
+      } catch (e) {
+        if (!e.restart && attempt >= 1) break; // real error (private/removed video) -> skip
+        setBusy(true, pre + "server restarted, retrying…");
+        await sleep(4000);
+      }
+    }
+    if (!ok) failed++;
+  }
+  setBusy(false);
+  toast(stopRequested
+    ? `Stopped — ${added} of ${total} songs added`
+    : `Playlist added: ${added} of ${total} songs` + (failed ? ` (${failed} unavailable)` : ""));
 }
 
 function setBusy(on, stage) {
@@ -416,13 +577,28 @@ function setBusy(on, stage) {
 
 // ---- playlist data -------------------------------------------------------------
 async function refreshPlaylist() {
+  const local = loadLocal();
   try {
     const res = await api("/api/playlist");
-    state.playlist = await res.json();
-    renderPlaylist();
+    let pl = await res.json();
+    const bootKey = "coda.boot." + libraryCode;
+    // server restarted since we last synced -> push our copy back (merge)
+    if (local && local.tracks && local.tracks.length && pl.boot !== localStorage.getItem(bootKey)) {
+      const have = new Set(pl.tracks.map((t) => t.id));
+      if (local.tracks.some((t) => !have.has(t.id))) {
+        const r = await api("/api/playlist/restore", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(local),
+        });
+        if (r.ok) pl = await r.json();
+      }
+    }
+    if (pl.boot) localStorage.setItem(bootKey, pl.boot);
+    state.playlist = { name: pl.name, tracks: pl.tracks };
   } catch (e) {
-    console.error(e);
+    if (local) state.playlist = local; // offline: play from the device
   }
+  renderPlaylist();
 }
 
 els.addBtn.addEventListener("click", addTrack);
@@ -456,6 +632,8 @@ async function removeTrack(id, index) {
     return;
   }
   state.playlist.tracks.splice(index, 1);
+  idb.del("a:" + id);
+  idb.del("t:" + id);
   // fix current index
   if (index < state.currentIndex) state.currentIndex -= 1;
   if (index === state.currentIndex) {

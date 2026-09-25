@@ -73,7 +73,10 @@ def _start_pot_server():
     costs ~20-30 s per attempt on Render's small free CPU."""
     deno = shutil.which("deno")
     main_ts = os.path.join(BGUTIL_SERVER_HOME, "src", "main.ts")
-    if not deno or not os.path.exists(main_ts) or os.environ.get("CODA_NO_POT_SERVER"):
+    # OFF by default: it idles at ~150-180 MB and pushed peak RAM to ~530 MB,
+    # above Render free's 512 MB -> OOM restart -> disk wiped. Opt in with
+    # CODA_POT_SERVER=1 on bigger machines.
+    if not deno or not os.path.exists(main_ts) or os.environ.get("CODA_POT_SERVER") != "1":
         return
     try:
         subprocess.Popen([deno, "run", "-A", main_ts], cwd=BGUTIL_SERVER_HOME,
@@ -86,6 +89,7 @@ def _start_pot_server():
 
 app = Flask(__name__, static_folder=os.path.join(BASE_DIR, "static"), static_url_path="")
 
+BOOT_ID = uuid.uuid4().hex[:8]  # changes on every restart -> browser re-syncs its copy
 JOBS = {}
 JOBS_LOCK = threading.Lock()
 PLAYLIST_LOCK = threading.Lock()
@@ -215,12 +219,25 @@ class ExtractError(Exception):
     pass
 
 
-def download_one(job_id, url, lib=None, prefix=""):
-    """Download + convert ONE video, append it to the library, return the track.
-    Raises ExtractError with a user-facing message on failure."""
+DOWNLOAD_LOCK = threading.Semaphore(1)  # one yt-dlp at a time: keeps RAM < 512 MB
+
+
+def download_one(job_id, url, lib=None, prefix="", track_id=None):
+    """Download ONE video, add it to the library, return the track.
+    One download runs at a time (RAM limit on small hosts); others wait."""
+    if not DOWNLOAD_LOCK.acquire(blocking=False):
+        job_set(job_id, stage=prefix + "waiting for another download…")
+        DOWNLOAD_LOCK.acquire()
+    try:
+        return _download_one(job_id, url, lib, prefix, track_id)
+    finally:
+        DOWNLOAD_LOCK.release()
+
+
+def _download_one(job_id, url, lib=None, prefix="", track_id=None):
     import yt_dlp
 
-    track_id = uuid.uuid4().hex[:12]
+    track_id = track_id or uuid.uuid4().hex[:12]
     template = os.path.join(TRACKS_DIR, track_id)
 
     def progress_hook(d):
@@ -383,7 +400,13 @@ def download_one(job_id, url, lib=None, prefix=""):
             "thumbnail": thumb_url,
             "added_at": now_iso(),
         }
-        pl["tracks"].append(track)
+        existing = [i for i, t in enumerate(pl["tracks"]) if t.get("id") == track_id]
+        if existing:  # re-download of a track the server lost -> replace in place
+            old = pl["tracks"][existing[0]]
+            track["added_at"] = old.get("added_at") or track["added_at"]
+            pl["tracks"][existing[0]] = track
+        else:
+            pl["tracks"].append(track)
         save_playlist(pl, lib)
 
     print("[coda] added: %s (%s, %ss)" % (title, artist, duration), flush=True)
@@ -419,11 +442,11 @@ def list_playlist(url):
             continue
         vid = e.get("id")
         if vid:
-            urls.append("https://www.youtube.com/watch?v=" + vid)
+            urls.append({"url": "https://www.youtube.com/watch?v=" + vid, "title": e.get("title") or ""})
     return info.get("title") or "Playlist", urls
 
 
-def extract_audio(job_id, url, lib=None):
+def extract_audio(job_id, url, lib=None, track_id=None):
     try:
         import yt_dlp  # noqa: F401
     except Exception as e:
@@ -435,9 +458,9 @@ def extract_audio(job_id, url, lib=None):
                 error="ffmpeg not found on PATH. Install ffmpeg (see README).")
         return
 
-    if not is_playlist_url(url):
+    if track_id or not is_playlist_url(url):
         try:
-            track = download_one(job_id, url, lib)
+            track = download_one(job_id, url, lib, track_id=track_id)
         except ExtractError as e:
             job_set(job_id, status="error", stage="error", error=str(e))
             return
@@ -459,7 +482,8 @@ def extract_audio(job_id, url, lib=None):
         return
     total, added, failed, last = len(urls), 0, [], None
     job_set(job_id, total=total, added=0, failed=0, playlist_title=ptitle)
-    for i, vurl in enumerate(urls):
+    for i, item in enumerate(urls):
+        vurl = item["url"]
         if (job_get(job_id) or {}).get("cancel"):
             break
         prefix = "Track %d/%d · " % (i + 1, total)
@@ -525,7 +549,7 @@ def health():
 @app.get("/api/playlist")
 def get_playlist():
     with PLAYLIST_LOCK:
-        return jsonify(load_playlist(current_library()))
+        return jsonify(dict(load_playlist(current_library()), boot=BOOT_ID))
 
 
 @app.post("/api/playlist")
@@ -581,11 +605,54 @@ def add_track():
     url = (data.get("url") or "").strip()
     if not re.match(r"^https?://\S+$", url, re.I):
         return jsonify({"error": "Please paste a valid http(s) URL."}), 400
+    track_id = re.sub(r"[^a-f0-9]", "", str(data.get("track_id") or ""))[:12] or None
+    single = bool(data.get("single"))  # browser-driven playlist import sends one video at a time
+    if single and not track_id:
+        track_id = uuid.uuid4().hex[:12]
     job_id = uuid.uuid4().hex
     job_set(job_id, status="pending", stage="queued", progress=0.0)
-    t = threading.Thread(target=extract_audio, args=(job_id, url, current_library()), daemon=True)
+    t = threading.Thread(target=extract_audio, args=(job_id, url, current_library(), track_id), daemon=True)
     t.start()
     return jsonify({"job_id": job_id})
+
+
+@app.get("/api/list")
+def list_entries():
+    """Playlist URL -> list of video URLs (no download). The browser then adds
+    them one by one, so an import survives server restarts."""
+    url = (request.args.get("url") or "").strip()
+    if not is_playlist_url(url):
+        return jsonify({"playlist": False})
+    try:
+        title, items = list_playlist(url)
+    except Exception as e:
+        return jsonify({"error": "Could not read playlist: %s" % str(e)[:300]}), 502
+    return jsonify({"playlist": True, "title": title, "items": items})
+
+
+@app.post("/api/playlist/restore")
+def restore_playlist():
+    """Browser keeps a copy of its library. After a server restart (Render
+    free wipes the disk) the browser pushes it back here."""
+    data = request.get_json(silent=True) or {}
+    lib = current_library()
+    if not lib or not isinstance(data.get("tracks"), list):
+        abort(400)
+    keys = ("id", "title", "artist", "duration", "source_url", "file", "thumbnail", "added_at")
+    tracks = []
+    for t in data["tracks"][:2000]:
+        if isinstance(t, dict) and re.match(r"^[a-f0-9]{6,32}$", str(t.get("id", ""))):
+            tracks.append({k: t.get(k) for k in keys})
+    with PLAYLIST_LOCK:
+        pl = load_playlist(lib)
+        # merge: browser's older tracks first, then anything added since restart
+        have = {t.get("id") for t in pl["tracks"]}
+        restored = [t for t in tracks if t["id"] not in have]
+        pl["tracks"] = restored + pl["tracks"]
+        if pl.get("name") in (None, "", "My Coda Playlist") and isinstance(data.get("name"), str) and data["name"].strip():
+            pl["name"] = data["name"].strip()[:120]
+        save_playlist(pl, lib)
+    return jsonify(dict(pl, boot=BOOT_ID))
 
 
 @app.post("/api/job/<job_id>/cancel")

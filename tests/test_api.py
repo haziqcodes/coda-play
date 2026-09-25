@@ -132,3 +132,30 @@ def test_playlist_url_detection():
     assert server.is_playlist_url("https://youtube.com/watch?v=x&list=PLxyz")
     assert not server.is_playlist_url("https://www.youtube.com/watch?v=IltsOcCj1Ak")
     assert not server.is_playlist_url("https://www.youtube.com/watch?v=x&list=RDx")  # endless mix
+
+
+def test_restore_merges_browser_copy_after_restart(client):
+    h = {"X-Coda-Library": "RESTORE1"}
+    _seed_tracks_lib = [{"id": "aaaaaa111111", "title": "Old", "file": "aaaaaa111111.m4a"}]
+    r = client.get("/api/playlist", headers=h).get_json()
+    assert r["tracks"] == [] and r["boot"]
+    r = client.post("/api/playlist/restore", json={"name": "Mine", "tracks": _seed_tracks_lib}, headers=h).get_json()
+    assert [t["id"] for t in r["tracks"]] == ["aaaaaa111111"]
+    assert r["name"] == "Mine"
+    # restoring again does not duplicate
+    r = client.post("/api/playlist/restore", json={"tracks": _seed_tracks_lib}, headers=h).get_json()
+    assert len(r["tracks"]) == 1
+
+
+def test_restore_rejects_bad_ids(client):
+    h = {"X-Coda-Library": "RESTORE2"}
+    r = client.post("/api/playlist/restore", json={"tracks": [{"id": "../../etc"}]}, headers=h).get_json()
+    assert r["tracks"] == []
+
+
+def test_audio_serves_m4a_with_range(client):
+    with open(server.os.path.join(server.TRACKS_DIR, "abc123def456.m4a"), "wb") as fh:
+        fh.write(b"x" * 1000)
+    r = client.get("/audio/abc123def456.m4a", headers={"Range": "bytes=0-99"})
+    assert r.status_code == 206 and r.mimetype == "audio/mp4" and len(r.data) == 100
+    assert client.get("/audio/abc123def456.exe").status_code == 404
