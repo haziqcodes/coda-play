@@ -499,7 +499,7 @@ def cookies_status():
     try:
         with open(COOKIES_FILE, "r", encoding="utf-8") as fh:
             lines = [line for line in fh.read().splitlines()
-                     if line.strip() and not line.strip().startswith("#")]
+                     if line.strip() and (not line.strip().startswith("#") or line.startswith("#HttpOnly_"))]
         return jsonify({"present": True, "cookies": len(lines)})
     except OSError:
         return jsonify({"present": False, "cookies": 0})
@@ -519,7 +519,7 @@ def cookies_upload():
         return jsonify({"error": "No cookies.txt content received."}), 400
     text = raw.decode("utf-8", errors="ignore")
     lines = [line for line in text.splitlines()
-             if line.strip() and not line.strip().startswith("#")]
+             if line.strip() and (not line.strip().startswith("#") or line.startswith("#HttpOnly_"))]
     if not lines:
         return jsonify({"error": "cookies.txt is empty (no cookie lines found). "
                                  "Export from youtube.com while signed in."}), 400
