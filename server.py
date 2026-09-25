@@ -288,8 +288,10 @@ def download_one(job_id, url, lib=None, prefix=""):
     has_cookies = os.path.exists(COOKIES_FILE)
     if has_cookies:
         configs = [
-            ("cookies+mweb", COOKIES_FILE, ["mweb", "web_safari"]),
+            # measured on Render: cookies+tv succeeds first try, cookies+mweb
+            # often fails after ~25 s — so tv goes first.
             ("cookies+tv", COOKIES_FILE, ["tv", "web"]),
+            ("cookies+mweb", COOKIES_FILE, ["mweb", "web_safari"]),
             ("mweb", None, ["mweb", "web_safari"]),
         ]
     else:
