@@ -177,16 +177,23 @@ playlist are lost) and the service sleeps after inactivity. For a permanent pers
 library, run it on your own machine or a free VPS instead.
 
 ### Troubleshooting: "Sign in to confirm you're not a bot" (YouTube)
-YouTube blocks datacenter/server IPs (Render, VPS) — this is YouTube's bot check,
-not a bug. Fix in ~2 minutes using **your own browser's session**:
-1. In your browser (signed into YouTube) install the extension **Get cookies.txt LOCALLY**
-   (Chrome) or **cookies.txt** (Firefox).
-2. Open `youtube.com`, click the extension icon → **Export (Netscape)** → saves `cookies.txt`.
-3. In Coda open **Settings** (card under the URL box) → choose the file → **Upload**.
-4. Retry the URL. Re-export every few weeks when the session expires.
+YouTube bot-checks server IPs (Render, VPS). Coda defeats this in layers:
 
-Cookies are stored only in `data/` on the server (git-ignored, never in the repo).
-Tip: use a dedicated YouTube account for this to limit what a leaked session exposes.
+1. **Built in (automatic, Docker image):** Deno JS runtime (solves YouTube's JS
+   challenges) + the **bgutil PO-token provider**, used with the `mweb` / `web_safari`
+   clients. This alone passes the bot check on most server IPs. Check
+   `/api/health` -> `"deno": true, "po_token_provider": true`.
+2. **Cookies (optional):** export `cookies.txt` from a **private/incognito window**
+   signed into YouTube, then close that window (otherwise YouTube rotates the cookies
+   and they die fast). Upload in **Settings**, or set env var `YT_COOKIES_B64`
+   (`base64 -w0 cookies.txt`) on Render so they survive redeploys.
+3. **Proxy (last resort):** if the IP is hard-flagged, set `YTDLP_PROXY`
+   (e.g. `socks5://user:pass@host:1080`) to a residential proxy, or run Coda on your
+   own PC / Termux (residential IP).
+
+Local run without Docker: install Deno (`curl -fsSL https://deno.land/install.sh | sh`),
+clone bgutil `server/` to `/opt/bgutil/server` (or set `BGUTIL_SERVER_HOME`) and run
+`deno install` inside it.
 
 ---
 

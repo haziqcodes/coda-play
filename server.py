@@ -37,6 +37,34 @@ COOKIES_FILE = os.path.join(DATA_DIR, "cookies.txt")
 for _d in (DATA_DIR, TRACKS_DIR, THUMB_DIR):
     os.makedirs(_d, exist_ok=True)
 
+# --- YouTube anti-bot configuration (all optional, via env vars) -----------
+# YTDLP_PROXY        e.g. socks5://user:pass@host:1080 — residential proxy for
+#                    server IPs YouTube has flagged (the only 100% fix there).
+# YT_COOKIES_B64     base64 of a Netscape cookies.txt. Written to data/ on
+#                    boot so cookies survive Render redeploys (ephemeral disk).
+# BGUTIL_SERVER_HOME path of the bgutil PO-token server (Dockerfile installs
+#                    it at /opt/bgutil/server). Needs Deno on PATH.
+YTDLP_PROXY = os.environ.get("YTDLP_PROXY", "").strip() or None
+BGUTIL_SERVER_HOME = os.environ.get("BGUTIL_SERVER_HOME", "/opt/bgutil/server")
+
+
+def _bootstrap_env_cookies():
+    b64 = os.environ.get("YT_COOKIES_B64", "").strip()
+    if not b64 or os.path.exists(COOKIES_FILE):
+        return
+    try:
+        import base64
+        text = base64.b64decode(b64).decode("utf-8", errors="ignore")
+        if text.strip():
+            with open(COOKIES_FILE, "w", encoding="utf-8") as fh:
+                fh.write(text.rstrip() + "\n")
+            print("[coda] cookies loaded from YT_COOKIES_B64", flush=True)
+    except Exception as e:  # never block startup on bad env
+        print("[coda] YT_COOKIES_B64 invalid:", e, flush=True)
+
+
+_bootstrap_env_cookies()
+
 app = Flask(__name__, static_folder=os.path.join(BASE_DIR, "static"), static_url_path="")
 
 JOBS = {}
@@ -183,8 +211,21 @@ def extract_audio(job_id, url):
         }
         if cookiefile:
             opts["cookiefile"] = cookiefile
+        if YTDLP_PROXY:
+            opts["proxy"] = YTDLP_PROXY
+        # JS challenge solving (Deno) + remote EJS scripts: required by
+        # current YouTube, otherwise only degraded/no formats come back.
+        if shutil.which("deno"):
+            opts["js_runtimes"] = {"deno": {}}
+            opts["remote_components"] = ["ejs:github"]
+        ex = {}
         if player_client:
-            opts["extractor_args"] = {"youtube": {"player_client": player_client}}
+            ex["youtube"] = {"player_client": player_client}
+        # PO tokens via bgutil (script mode, no sidecar process needed).
+        if os.path.isdir(BGUTIL_SERVER_HOME):
+            ex["youtubepot-bgutilscript"] = {"server_home": [BGUTIL_SERVER_HOME]}
+        if ex:
+            opts["extractor_args"] = ex
         return opts
 
     # Ladder of extraction configs. Local IPs usually work with the default
@@ -196,19 +237,20 @@ def extract_audio(job_id, url):
     # cookie configs come first: they work everywhere AND anonymous attempts
     # from datacenter IPs get those IPs flagged by YouTube, which would then
     # break even the cookie path.
+    # mweb / web_safari use PO tokens (bgutil) and pass the bot check from
+    # most server IPs; tv / android_vr are PO-token-free fallbacks.
     has_cookies = os.path.exists(COOKIES_FILE)
     if has_cookies:
         configs = [
-            ("cookies+web", COOKIES_FILE, ["web"]),
-            ("cookies+android", COOKIES_FILE, ["android", "ios", "tv"]),
-            ("default", None, None),
-            ("android", None, ["android", "ios", "tv"]),
+            ("cookies+mweb", COOKIES_FILE, ["mweb", "web_safari"]),
+            ("cookies+tv", COOKIES_FILE, ["tv", "web"]),
+            ("mweb", None, ["mweb", "web_safari"]),
         ]
     else:
         configs = [
+            ("mweb", None, ["mweb", "web_safari"]),
             ("default", None, None),
-            ("android", None, ["android", "ios", "tv"]),
-            ("tv", None, ["tv", "ios"]),
+            ("android_vr", None, ["android_vr", "tv"]),
         ]
 
     info, produced, attempts = {}, None, []
@@ -250,10 +292,10 @@ def extract_audio(job_id, url):
                 brief.append(a[:200])
         msg = " | ".join(brief[:4]) or "extraction failed"
         if any("Sign in to confirm" in a or "not a bot" in a for a in attempts):
-            msg += (" | YouTube is blocking this server's IP. Open Settings on the page, "
-                    "upload the FULL cookies.txt exported from your own browser session "
-                    "at youtube.com (keep all cookies, including __Secure-* and "
-                    "ST-* tokens), and try again.")
+            msg += (" | YouTube is blocking this server's IP even with PO tokens. "
+                    "Fix: set YTDLP_PROXY to a residential proxy, and/or upload a fresh "
+                    "cookies.txt in Settings (export it from a PRIVATE/incognito window, "
+                    "then close that window so YouTube does not rotate the cookies).")
         job_set(job_id, status="error", stage="error", error=msg[:1600])
         print("[coda] extract failed:", msg[:300], flush=True)
         return
@@ -333,6 +375,10 @@ def health():
         "yt_reachable": probe("www.youtube.com", 5),
         "ig_reachable": probe("www.instagram.com", 5),
         "tracks_dir": TRACKS_DIR,
+        "deno": bool(shutil.which("deno")),
+        "po_token_provider": os.path.isdir(BGUTIL_SERVER_HOME),
+        "proxy": bool(YTDLP_PROXY),
+        "cookies": os.path.exists(COOKIES_FILE),
     })
 
 

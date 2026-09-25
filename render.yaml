@@ -7,3 +7,10 @@ services:
     plan: free
     region: sydney           # fresh datacenter IP (YouTube flags render IPs; change here if this one gets flagged)
     healthCheckPath: /api/health
+    envVars:
+      # Optional. Residential proxy if YouTube hard-flags the Render IP.
+      - key: YTDLP_PROXY
+        sync: false
+      # Optional. base64 of cookies.txt — survives redeploys (disk is ephemeral).
+      - key: YT_COOKIES_B64
+        sync: false
