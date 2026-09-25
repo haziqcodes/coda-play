@@ -429,14 +429,17 @@ def extract_audio(job_id, url, lib=None):
     total, added, failed, last = len(urls), 0, [], None
     job_set(job_id, total=total, added=0, failed=0, playlist_title=ptitle)
     for i, vurl in enumerate(urls):
+        if (job_get(job_id) or {}).get("cancel"):
+            break
         prefix = "Track %d/%d · " % (i + 1, total)
         job_set(job_id, stage=prefix + "starting…", current=i + 1, track_progress=0.0)
         try:
             last = download_one(job_id, vurl, lib, prefix)
             added += 1
         except Exception as e:
-            failed.append("%s: %s" % (vurl, str(e)[:120]))
-        job_set(job_id, added=added, failed=len(failed), progress=(i + 1) / total)
+            failed.append("%s: %s" % (vurl, str(e)[:300]))
+        job_set(job_id, added=added, failed=len(failed), progress=(i + 1) / total,
+                failures=failed[-10:])
     if added == 0:
         job_set(job_id, status="error", stage="error",
                 error="No track from the playlist could be added. " + " | ".join(failed[:2]))
@@ -551,6 +554,15 @@ def add_track():
     t = threading.Thread(target=extract_audio, args=(job_id, url, current_library()), daemon=True)
     t.start()
     return jsonify({"job_id": job_id})
+
+
+@app.post("/api/job/<job_id>/cancel")
+def job_cancel(job_id):
+    """Stop a playlist import after the current track finishes."""
+    if job_get(job_id) is None:
+        abort(404)
+    job_set(job_id, cancel=True, stage="stopping after this track…")
+    return jsonify({"ok": True})
 
 
 @app.get("/api/job/<job_id>")

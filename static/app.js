@@ -334,6 +334,13 @@ window.addEventListener("keydown", (e) => {
 
 // ---- add track (url -> job -> poll) ------------------------------------------
 let pollTimer = null;
+let currentJob = null;
+const stopBtn = $("stopBtn");
+stopBtn.addEventListener("click", async () => {
+  if (!currentJob) return;
+  stopBtn.disabled = true;
+  try { await api("/api/job/" + currentJob + "/cancel", { method: "POST" }); } catch {}
+});
 async function addTrack() {
   const url = els.urlInput.value.trim();
   if (!url) { toast("Paste a video URL first.", true); return; }
@@ -359,16 +366,20 @@ async function addTrack() {
 function pollJob(jobId) {
   clearTimeout(pollTimer);
   let lastAdded = 0;
+  currentJob = jobId;
   const tick = async () => {
     try {
       const res = await api("/api/job/" + jobId);
       const job = await res.json();
       const isList = job.kind === "playlist";
+      stopBtn.classList.toggle("hidden", !(isList && job.status !== "done" && job.status !== "error"));
       if (isList && job.added !== lastAdded) { lastAdded = job.added; refreshPlaylist(); }
       if (job.status === "done") {
         setBusy(false);
         if (isList) {
-          toast(`Playlist added: ${job.added} of ${job.total} tracks` + (job.total > job.added ? " (some were unavailable)" : ""));
+          toast(job.cancel
+            ? `Stopped — ${job.added} of ${job.total} tracks added`
+            : `Playlist added: ${job.added} of ${job.total} tracks` + (job.total > job.added ? " (some were unavailable)" : ""));
         } else {
           toast(`Added: ${job.track.title}`);
         }
@@ -396,6 +407,8 @@ function setBusy(on, stage) {
   els.addBtn.querySelector("span").textContent = on ? "Working…" : "Add";
   if (stage) els.progressStage.textContent = stage;
   if (!on) {
+    stopBtn.classList.add("hidden");
+    stopBtn.disabled = false;
     els.progressErr.textContent = "";
     setTimeout(() => (els.progressFill.style.width = "0%"), 400);
   }
